@@ -17,7 +17,7 @@ def shuffle_list(lst: list) -> list:
     return out
 
 
-def compute_level(pct: float, lang: str) -> str:
+def compute_level(pct: float, lang: str = "ru") -> str:
     from locales import get_text as t
     if pct >= 85:
         return t("level_excellent", lang)
