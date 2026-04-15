@@ -6,6 +6,8 @@ from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SUBJECTS = ["История Казахстана", "Биология", "Математическая грамотность"]
+
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -31,11 +33,17 @@ CREATE TABLE IF NOT EXISTS blocked_users (
     reason TEXT,
     blocked_at TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS subjects (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS tests (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     subject TEXT DEFAULT '',
+    subject_id INTEGER DEFAULT 0,
     grade TEXT DEFAULT '',
     category TEXT DEFAULT '',
     language TEXT DEFAULT 'ru',
@@ -318,7 +326,57 @@ CREATE TABLE IF NOT EXISTS settings (
 """)
     conn.commit()
     conn.close()
+    seed_subjects()
     logger.info("Database initialised.")
+
+
+# ── Subjects (Разделы) ─────────────────────────────
+
+def get_subjects():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM subjects ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_subject(name: str) -> int:
+    conn = get_conn()
+    try:
+        cur = conn.execute("INSERT INTO subjects(name) VALUES(?)", (name,))
+        sid = cur.lastrowid
+        conn.commit()
+        conn.close()
+        return sid
+    except:
+        conn.close()
+        return 0
+
+
+def delete_subject(subject_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM subjects WHERE id=?", (subject_id,))
+    conn.commit()
+    conn.close()
+
+
+def seed_subjects():
+    conn = get_conn()
+    existing = conn.execute("SELECT COUNT(*) as cnt FROM subjects").fetchone()["cnt"]
+    if existing == 0:
+        for name in DEFAULT_SUBJECTS:
+            conn.execute("INSERT OR IGNORE INTO subjects(name) VALUES(?)", (name,))
+        conn.commit()
+    conn.close()
+
+
+def list_tests_by_subject(subject_name: str, language: str = "ru"):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tests WHERE subject=? AND language=? AND status='active' ORDER BY id DESC",
+        (subject_name, language)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ── Users ──────────────────────────────────────────
@@ -476,8 +534,7 @@ def get_test(test_id: int):
     return dict(row) if row else None
 
 
-def list_tests(language=None, test_type=None, status_filter="active",
-               limit=50, offset=0):
+def list_tests(language=None, test_type=None, status_filter="active", limit=50, offset=0):
     clauses = ["status=?"]
     params = [status_filter]
     if language:
@@ -490,8 +547,7 @@ def list_tests(language=None, test_type=None, status_filter="active",
     params += [limit, offset]
     conn = get_conn()
     rows = conn.execute(
-        f"SELECT * FROM tests WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
-        params
+        f"SELECT * FROM tests WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?", params
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -514,8 +570,7 @@ def delete_test(test_id: int):
 
 # ── Questions ──────────────────────────────────────
 
-def add_question(test_id: int, text: str, explanation="", topic="",
-                 difficulty=1, points=1.0) -> int:
+def add_question(test_id: int, text: str, explanation="", topic="", difficulty=1, points=1.0) -> int:
     conn = get_conn()
     cur = conn.execute(
         "INSERT INTO questions(test_id, text, explanation, topic, difficulty, points) VALUES(?,?,?,?,?,?)",
@@ -584,8 +639,7 @@ def update_question(qid: int, **kwargs):
 
 # ── Attempts ───────────────────────────────────────
 
-def create_attempt(user_id: int, test_id: int, question_order: list,
-                   is_first: bool, language: str) -> int:
+def create_attempt(user_id: int, test_id: int, question_order: list, is_first: bool, language: str) -> int:
     conn = get_conn()
     row = conn.execute(
         "SELECT COUNT(*) as cnt FROM test_attempts WHERE user_id=? AND test_id=? AND status='finished'",
@@ -628,8 +682,7 @@ def update_attempt(attempt_id: int, data: dict):
     conn.close()
 
 
-def save_answer(attempt_id: int, question_id: int, option_id, is_correct: bool,
-                ms: int, topic: str = ""):
+def save_answer(attempt_id: int, question_id: int, option_id, is_correct: bool, ms: int, topic: str = ""):
     conn = get_conn()
     conn.execute("""
         INSERT OR IGNORE INTO attempt_answers
@@ -748,9 +801,7 @@ def resolve_poll_draft(draft_id: int, correct_idx: int):
                  (correct_idx, draft_id))
     conn.commit()
     conn.close()
-    if row:
-        return dict(row)
-    return None
+    return dict(row) if row else None
 
 
 # ── Ratings ────────────────────────────────────────
@@ -834,8 +885,7 @@ def get_daily_task(task_date: str, language: str):
     return dict(row) if row else None
 
 
-def create_daily_task(task_date: str, language: str, question_ids: list,
-                      mode: str = "random") -> int:
+def create_daily_task(task_date: str, language: str, question_ids: list, mode: str = "random") -> int:
     conn = get_conn()
     cur = conn.execute(
         "INSERT OR REPLACE INTO daily_tasks(task_date, language, question_ids, question_count) VALUES(?,?,?,?)",
@@ -847,8 +897,7 @@ def create_daily_task(task_date: str, language: str, question_ids: list,
     return task_id
 
 
-def save_daily_result(user_id: int, task_date: str, correct: int, wrong: int,
-                      skipped: int, pct: float):
+def save_daily_result(user_id: int, task_date: str, correct: int, wrong: int, skipped: int, pct: float):
     from datetime import date, timedelta
     yesterday = (date.fromisoformat(task_date) - timedelta(days=1)).isoformat()
     conn = get_conn()
@@ -967,8 +1016,7 @@ def get_duel_score(duel_id: int, user_id: int) -> int:
 def cancel_duel(duel_id: int, user_id: int = None):
     conn = get_conn()
     conn.execute(
-        "UPDATE duels SET status='cancelled', finished_at=datetime('now') WHERE id=?",
-        (duel_id,)
+        "UPDATE duels SET status='cancelled', finished_at=datetime('now') WHERE id=?", (duel_id,)
     )
     conn.commit()
     conn.close()
@@ -1148,7 +1196,6 @@ def get_tournament_leaderboard(tournament_id: int, limit=10):
 # ── Group quizzes ──────────────────────────────────
 
 def create_group_quiz(chat_id: int, test_id: int, started_by: int) -> int:
-    from services.test_runner import get_questions as gq
     import random
     questions = get_questions(test_id)
     q_ids = [q["id"] for q in questions]
