@@ -5,21 +5,20 @@ import random
 import sqlite3
 from datetime import datetime
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
 import database as db
 from config import DB_PATH, PAUSE_AFTER_MISSED, DEFAULT_QUESTION_TIME
 
 logger = logging.getLogger(__name__)
 
 _timers = {}
-_q_message_ids = {}
+_poll_message_ids = {}
 
 
 async def start_attempt(message: Message, user_id: int, test_id: int,
-                         state: FSMContext, daily_question_ids=None,
-                         daily_task_id=None) -> None:
+                        state: FSMContext, daily_question_ids=None,
+                        daily_task_id=None) -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     user = conn.execute("SELECT language FROM users WHERE telegram_id=?", (user_id,)).fetchone()
@@ -42,11 +41,9 @@ async def start_attempt(message: Message, user_id: int, test_id: int,
         if test.get("shuffle_questions", True):
             random.shuffle(q_ids)
         time_per_q = test.get("time_per_question", DEFAULT_QUESTION_TIME)
-        show_answers = test.get("show_answers", False)
     else:
         q_ids = daily_question_ids or []
         time_per_q = DEFAULT_QUESTION_TIME
-        show_answers = False
         test = {"id": None, "shuffle_options": True, "show_answers": False,
                 "time_per_question": time_per_q, "first_attempt_only": True,
                 "show_explanations": False}
@@ -63,98 +60,111 @@ async def start_attempt(message: Message, user_id: int, test_id: int,
     )
     db.update_attempt(attempt_id, {"is_counted": 1})
 
-    if daily_task_id:
-        await state.update_data(daily_attempt_id=attempt_id, daily_task_id=daily_task_id)
+    if lang == "ru":
+        await message.answer(
+            f"🎯 Тест начинается!\n"
+            f"Вопросов: {len(q_ids)}\n"
+            f"Время на вопрос: {time_per_q} сек\n\n"
+            f"Отвечайте на опросы ниже 👇"
+        )
+    else:
+        await message.answer(
+            f"🎯 Тест басталды!\n"
+            f"Сұрақ: {len(q_ids)}\n"
+            f"Уақыт: {time_per_q} сек\n\n"
+            f"Төмендегі сауалнамаларға жауап беріңіз 👇"
+        )
 
-    await send_question(message.bot, attempt_id, message.chat.id, test, lang)
+    await send_poll_question(message.bot, attempt_id, message.chat.id, test, lang)
 
 
-async def send_question(bot: Bot, attempt_id: int, chat_id: int, test, lang: str = "ru") -> None:
+async def send_poll_question(bot: Bot, attempt_id: int, chat_id: int,
+                              test, lang: str = "ru") -> None:
     attempt = db.get_attempt(attempt_id)
     if not attempt or attempt["status"] != "active":
         return
+
     question_order = json.loads(attempt["question_order"])
     idx = attempt["current_question_index"]
+
     if idx >= len(question_order):
         await finish_attempt(bot, attempt_id, chat_id, test, lang)
         return
+
     qid = question_order[idx]
     question = db.get_question(qid)
     options = db.get_options(qid)
+
     if not question or not options:
         db.update_attempt(attempt_id, {
             "current_question_index": idx + 1,
             "skipped_answers": attempt["skipped_answers"] + 1,
         })
-        await send_question(bot, attempt_id, chat_id, test, lang)
+        await send_poll_question(bot, attempt_id, chat_id, test, lang)
         return
+
     opts_list = list(options)
     if test.get("shuffle_options", True):
         random.shuffle(opts_list)
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    btns = [[InlineKeyboardButton(
-        text=f"{chr(65+i)}) {o['text'][:60]}",
-        callback_data=f"ans:{attempt_id}:{qid}:{o['id']}"
-    )] for i, o in enumerate(opts_list)]
-    kb = InlineKeyboardMarkup(inline_keyboard=btns)
+
+    correct_idx = next((i for i, o in enumerate(opts_list) if o["is_correct"]), 0)
+    option_texts = [o["text"][:100] for o in opts_list]
+
     time_per_q = test.get("time_per_question", DEFAULT_QUESTION_TIME)
-    text = (f"❓ Вопрос {idx+1}/{len(question_order)}\n\n"
-            f"<b>{question['text']}</b>\n\n"
-            f"⏱ {time_per_q} сек")
-    if attempt_id in _q_message_ids:
-        try:
-            await bot.edit_message_reply_markup(chat_id, _q_message_ids[attempt_id], reply_markup=None)
-        except Exception:
-            pass
+    question_text = f"❓ {idx+1}/{len(question_order)}\n\n{question['text']}"
+    if len(question_text) > 300:
+        question_text = question_text[:297] + "..."
+
     try:
-        msg = await bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML", protect_content=True)
-        _q_message_ids[attempt_id] = msg.message_id
-    except TelegramBadRequest as e:
-        logger.error("send_question error: %s", e)
+        msg = await bot.send_poll(
+            chat_id=chat_id,
+            question=question_text,
+            options=option_texts,
+            type="quiz",
+            correct_option_id=correct_idx,
+            is_anonymous=False,
+            open_period=time_per_q,
+            protect_content=True,
+            explanation=question.get("explanation", "") or None,
+        )
+        _poll_message_ids[attempt_id] = {
+            "message_id": msg.message_id,
+            "poll_id": msg.poll.id,
+            "question_id": qid,
+            "correct_idx": correct_idx,
+            "opts": opts_list,
+        }
+    except Exception as e:
+        logger.error("send_poll error: %s", e)
+        await bot.send_message(chat_id, f"❌ Ошибка отправки вопроса: {e}")
         return
+
     db.update_attempt(attempt_id, {"pause_time": datetime.utcnow().isoformat()})
-    if time_per_q:
-        _cancel_timer(attempt_id)
-        task = asyncio.create_task(_question_timer(bot, attempt_id, chat_id, test, lang, time_per_q))
-        _timers[attempt_id] = task
+
+    # Auto advance after timer
+    _cancel_timer(attempt_id)
+    task = asyncio.create_task(
+        _poll_timer(bot, attempt_id, chat_id, test, lang, qid, time_per_q + 2)
+    )
+    _timers[attempt_id] = task
 
 
-async def _question_timer(bot: Bot, attempt_id: int, chat_id: int, test, lang: str, seconds: int) -> None:
+async def _poll_timer(bot: Bot, attempt_id: int, chat_id: int, test,
+                      lang: str, question_id: int, seconds: int) -> None:
     await asyncio.sleep(seconds)
     attempt = db.get_attempt(attempt_id)
     if not attempt or attempt["status"] != "active":
         return
-    question_order = json.loads(attempt["question_order"])
-    idx = attempt["current_question_index"]
-    if idx >= len(question_order):
+    # Check if already answered
+    if db.has_answered(attempt_id, question_id):
         return
-    qid = question_order[idx]
-    if db.has_answered(attempt_id, qid):
-        return
-    db.save_answer(attempt_id, qid, None, False, seconds * 1000, topic="")
-    missed = attempt["missed_questions_counter"] + 1
+    # Time up — record as skipped
+    db.save_answer(attempt_id, question_id, None, False, seconds * 1000, topic="")
     db.update_attempt(attempt_id, {
-        "current_question_index": idx + 1,
+        "current_question_index": attempt["current_question_index"] + 1,
         "skipped_answers": attempt["skipped_answers"] + 1,
-        "missed_questions_counter": missed,
     })
-    try:
-        await bot.send_message(chat_id, "⏰ Время вышло!", protect_content=True)
-    except Exception:
-        pass
-    if missed >= PAUSE_AFTER_MISSED:
-        db.update_attempt(attempt_id, {"paused": 1, "missed_questions_counter": 0})
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="▶️ Продолжить", callback_data=f"pause:continue:{attempt_id}")],
-            [InlineKeyboardButton(text="⏹ Завершить", callback_data=f"pause:finish:{attempt_id}")]
-        ])
-        try:
-            await bot.send_message(chat_id, "⏸ Пауза! Вы пропустили несколько вопросов.", reply_markup=kb)
-        except Exception:
-            pass
-        return
-    await send_question(bot, attempt_id, chat_id, test, lang)
+    await send_poll_question(bot, attempt_id, chat_id, test, lang)
 
 
 def _cancel_timer(attempt_id: int) -> None:
@@ -163,46 +173,79 @@ def _cancel_timer(attempt_id: int) -> None:
         task.cancel()
 
 
-async def handle_answer(bot: Bot, attempt_id: int, question_id: int,
-                         option_id: int, chat_id: int, test) -> None:
+async def handle_poll_answer(bot: Bot, poll_id: str, user_id: int,
+                              option_id: int, chat_id: int) -> None:
+    """Called when user answers a poll."""
+    # Find attempt by poll_id
+    attempt_id = None
+    poll_data = None
+    for aid, data in list(_poll_message_ids.items()):
+        if data.get("poll_id") == poll_id:
+            attempt_id = aid
+            poll_data = data
+            break
+
+    if not attempt_id or not poll_data:
+        return
+
     attempt = db.get_attempt(attempt_id)
     if not attempt or attempt["status"] != "active":
         return
+    if attempt["user_id"] != user_id:
+        return
+
+    question_id = poll_data["question_id"]
     if db.has_answered(attempt_id, question_id):
         return
+
     _cancel_timer(attempt_id)
+
+    correct_idx = poll_data["correct_idx"]
+    is_correct = (option_id == correct_idx)
+    opts = poll_data["opts"]
+    chosen_opt = opts[option_id] if option_id < len(opts) else None
+    chosen_id = chosen_opt["id"] if chosen_opt else None
+
     start_iso = attempt.get("pause_time")
     start_ts = datetime.fromisoformat(start_iso) if start_iso else datetime.utcnow()
     ms = int((datetime.utcnow() - start_ts).total_seconds() * 1000)
+
     question = db.get_question(question_id)
-    options = db.get_options(question_id)
-    correct_opt = next((o for o in options if o["is_correct"]), None)
-    is_correct = bool(correct_opt and correct_opt["id"] == option_id)
-    db.save_answer(attempt_id, question_id, option_id, is_correct, ms,
-                   topic=question["topic"] if question else "")
-    attempt = db.get_attempt(attempt_id)
-    lang = attempt.get("language", "ru")
-    correct_n = attempt["correct_answers"] + (1 if is_correct else 0)
-    wrong_n = attempt["wrong_answers"] + (0 if is_correct else 1)
+    db.save_answer(attempt_id, question_id, chosen_id, is_correct, ms,
+                   topic=question.get("topic", "") if question else "")
+
     db.update_attempt(attempt_id, {
-        "correct_answers": correct_n,
-        "wrong_answers": wrong_n,
+        "correct_answers": attempt["correct_answers"] + (1 if is_correct else 0),
+        "wrong_answers": attempt["wrong_answers"] + (0 if is_correct else 1),
         "missed_questions_counter": 0,
         "current_question_index": attempt["current_question_index"] + 1,
     })
-    feedback = "✅ Правильно!" if is_correct else "❌ Неверно!"
-    if test.get("show_explanations") and question and question.get("explanation"):
-        feedback += f"\n\n💡 {question['explanation']}"
-    if attempt_id in _q_message_ids:
-        try:
-            await bot.edit_message_reply_markup(chat_id, _q_message_ids[attempt_id], reply_markup=None)
-        except Exception:
-            pass
-    try:
-        await bot.send_message(chat_id, feedback, parse_mode="HTML", protect_content=True)
-    except Exception:
-        pass
-    await send_question(bot, attempt_id, chat_id, test, lang)
+
+    # Remove from tracking
+    _poll_message_ids.pop(attempt_id, None)
+
+    # Small delay then next question
+    await asyncio.sleep(1.5)
+    attempt = db.get_attempt(attempt_id)
+    lang = attempt.get("language", "ru") if attempt else "ru"
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    test_row = conn.execute("SELECT * FROM tests WHERE id=?", (attempt["test_id"],)).fetchone()
+    conn.close()
+    test = dict(test_row) if test_row else {}
+
+    await send_poll_question(bot, attempt_id, chat_id, test, lang)
+
+
+# Keep old handle_answer for compatibility
+async def handle_answer(bot: Bot, attempt_id: int, question_id: int,
+                         option_id: int, chat_id: int, test) -> None:
+    attempt = db.get_attempt(attempt_id)
+    if not attempt:
+        return
+    lang = attempt.get("language", "ru")
+    await finish_attempt(bot, attempt_id, chat_id, test, lang)
 
 
 async def resume_attempt(bot: Bot, attempt_id: int, chat_id: int, test) -> None:
@@ -211,49 +254,62 @@ async def resume_attempt(bot: Bot, attempt_id: int, chat_id: int, test) -> None:
         return
     lang = attempt.get("language", "ru")
     db.update_attempt(attempt_id, {"paused": 0, "missed_questions_counter": 0})
-    await send_question(bot, attempt_id, chat_id, test, lang)
+    await send_poll_question(bot, attempt_id, chat_id, test, lang)
 
 
-async def finish_attempt(bot: Bot, attempt_id: int, chat_id: int, test, lang: str = "ru") -> None:
+async def finish_attempt(bot: Bot, attempt_id: int, chat_id: int,
+                          test, lang: str = "ru") -> None:
     _cancel_timer(attempt_id)
+    _poll_message_ids.pop(attempt_id, None)
+
     attempt = db.get_attempt(attempt_id)
     if not attempt:
         return
+
     db.update_attempt(attempt_id, {
         "status": "finished",
         "end_time": datetime.utcnow().isoformat(),
     })
+
     correct = attempt["correct_answers"]
     wrong = attempt["wrong_answers"]
     skipped = attempt["skipped_answers"]
     total = correct + wrong + skipped
     pct = round(correct / total * 100, 1) if total else 0
+
     if pct >= 90:
-        grade = "🏆 Отлично!"
+        grade = "🏆 Отлично!" if lang == "ru" else "🏆 Өте жақсы!"
     elif pct >= 70:
-        grade = "✅ Хорошо!"
+        grade = "✅ Хорошо!" if lang == "ru" else "✅ Жақсы!"
     elif pct >= 50:
-        grade = "⚠️ Удовлетворительно"
+        grade = "⚠️ Удовлетворительно" if lang == "ru" else "⚠️ Қанағаттанарлық"
     else:
-        grade = "❌ Нужно повторить"
-    text = (f"📊 <b>Результат</b>\n\n"
+        grade = "❌ Нужно повторить" if lang == "ru" else "❌ Қайталау керек"
+
+    if lang == "ru":
+        text = (
+            f"📊 <b>Результат теста</b>\n\n"
             f"✅ Правильных: {correct}\n"
             f"❌ Неправильных: {wrong}\n"
             f"⏭ Пропущено: {skipped}\n"
             f"📈 Результат: {pct}%\n\n"
-            f"{grade}")
+            f"{grade}"
+        )
+    else:
+        text = (
+            f"📊 <b>Тест нәтижесі</b>\n\n"
+            f"✅ Дұрыс: {correct}\n"
+            f"❌ Қате: {wrong}\n"
+            f"⏭ Өткізілді: {skipped}\n"
+            f"📈 Нәтиже: {pct}%\n\n"
+            f"{grade}"
+        )
+
     try:
-        await bot.send_message(chat_id, text, parse_mode="HTML", protect_content=True)
+        await bot.send_message(chat_id, text, parse_mode="HTML")
     except Exception as e:
         logger.error("finish_attempt: %s", e)
-    weak_topics = db.get_weak_topics(attempt["user_id"], lang)
-    if weak_topics:
-        topics_str = "\n".join(f"  • {tp}" for tp in weak_topics[:5])
-        try:
-            await bot.send_message(chat_id,
-                f"📚 Слабые темы — повторите:\n{topics_str}", protect_content=True)
-        except Exception:
-            pass
+
     asyncio.create_task(_check_achievements(bot, attempt["user_id"]))
 
 
