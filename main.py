@@ -1,72 +1,55 @@
-"""
-main.py — Точка входа. Инициализация бота, диспетчера, роутеров.
-"""
-
 import asyncio
 import logging
-import os
-
+import sqlite3
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-
+from aiogram.types import PollAnswer
 from config import BOT_TOKEN
 from database import init_db
-
-# Handlers
 from handlers import common, user, admin, profile, notes, homework
 from handlers import daily, duel, rating, quiz, inline, premium, tournament
-
-# Middlewares
 from middlewares import RegisterUserMiddleware, BlockedUserMiddleware, AntiSpamMiddleware
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
 async def main():
-    # Initialise DB (creates tables if not exists)
     init_db()
     logger.info("Database initialised.")
-
-    # Save bot username to settings for referral links
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     bot_info = await bot.get_me()
-    import sqlite3
-    from config import DB_PATH
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT OR REPLACE INTO settings(key, value) VALUES('bot_username', ?)",
-        (bot_info.username,)
-    )
+    conn = sqlite3.connect("ent_bot.db")
+    conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES('bot_username', ?)", (bot_info.username,))
     conn.commit()
     conn.close()
     logger.info(f"Bot: @{bot_info.username}")
-
     dp = Dispatcher(storage=MemoryStorage())
 
-    # ─── Middlewares (order matters) ───
-    # RegisterUserMiddleware runs first — ensures user exists in DB
     dp.message.middleware(RegisterUserMiddleware())
     dp.callback_query.middleware(RegisterUserMiddleware())
-
-    # BlockedUserMiddleware drops all updates from blocked users
     dp.message.middleware(BlockedUserMiddleware())
     dp.callback_query.middleware(BlockedUserMiddleware())
-
-    # AntiSpamMiddleware rate-limits messages and button presses
     dp.message.middleware(AntiSpamMiddleware())
     dp.callback_query.middleware(AntiSpamMiddleware())
 
-    # ─── Routers ───
-    # Order: admin first (has IsAdmin filter), then specific handlers, then general
+    @dp.poll_answer()
+    async def on_poll_answer(poll_answer: PollAnswer):
+        from services.test_runner import handle_poll_answer
+        try:
+            option_id = poll_answer.option_ids[0] if poll_answer.option_ids else 0
+            await handle_poll_answer(
+                bot=bot,
+                poll_id=poll_answer.poll_id,
+                user_id=poll_answer.user.id,
+                option_id=option_id,
+                chat_id=poll_answer.user.id,
+            )
+        except Exception as e:
+            logger.error("poll_answer error: %s", e)
+
     dp.include_router(admin.router)
     dp.include_router(inline.router)
     dp.include_router(common.router)
@@ -79,14 +62,16 @@ async def main():
     dp.include_router(rating.router)
     dp.include_router(quiz.router)
     dp.include_router(tournament.router)
-    dp.include_router(user.router)   # General user handler last (catches remaining callbacks)
+    dp.include_router(user.router)
 
     logger.info("Starting bot polling...")
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message", "callback_query", "poll_answer", "inline_query"]
+        )
     finally:
         await bot.session.close()
-        logger.info("Bot stopped.")
 
 
 if __name__ == "__main__":
