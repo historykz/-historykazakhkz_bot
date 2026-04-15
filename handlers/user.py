@@ -1,11 +1,11 @@
 import json
 import logging
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 
 import database as db
-from keyboards import test_card_kb, paid_test_kb, subscribe_kb, main_menu_kb, back_kb
+from keyboards import paid_test_kb, subscribe_kb, main_menu_kb, back_kb
 from locales import get_text as t
 from config import MANAGER_USERNAME, PAGE_SIZE
 from services.subscription_service import check_all_channels
@@ -41,7 +41,7 @@ async def show_catalog(message, lang, test_type, page=0):
     tests = db.list_tests(language=lang, test_type=test_type, status_filter="active",
                           limit=PAGE_SIZE, offset=page * PAGE_SIZE)
     if not tests:
-        await message.answer(t("test_not_found", lang))
+        await message.answer("📭 Тестов пока нет." if lang == "ru" else "📭 Тест жоқ.")
         return
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     b = InlineKeyboardBuilder()
@@ -49,7 +49,8 @@ async def show_catalog(message, lang, test_type, page=0):
         label = f"{'🔒' if test['is_paid'] else '📚'} {test['title']}"
         b.button(text=label, callback_data=f"test:card:{test['id']}")
     b.adjust(1)
-    await message.answer(t("main_menu", lang), reply_markup=b.as_markup())
+    title = "📚 Выберите тест:" if lang == "ru" else "📚 Тест таңдаңыз:"
+    await message.answer(title, reply_markup=b.as_markup())
 
 
 @router.callback_query(F.data.startswith("test:card:"))
@@ -64,22 +65,44 @@ async def cb_test_card(call: CallbackQuery):
 async def show_test_card(message, test_id, lang):
     test = db.get_test(test_id)
     if not test:
-        await message.answer(t("test_not_found", lang))
+        await message.answer("❌ Тест не найден." if lang == "ru" else "❌ Тест табылмады.")
         return
     if test["language"] != lang:
-        await message.answer(t("wrong_language_test", lang))
+        await message.answer(
+            "❌ Этот тест на другом языке. Смените язык в профиле."
+            if lang == "ru"
+            else "❌ Бұл тест басқа тілде. Профильде тілді өзгертіңіз."
+        )
         return
     text = build_test_card_text(test, lang)
     user_id = message.chat.id
+
+    # Платный тест — проверка доступа
     if test["is_paid"] and not db.has_test_access(user_id, test_id):
         await message.answer(
-            text + "\n\n" + t("paid_test_card", lang, price=test["price"], manager=MANAGER_USERNAME),
+            text + f"\n\n💰 Платный тест: {test.get('price', 0)} тг\n"
+                   f"Для получения доступа обратитесь: @{MANAGER_USERNAME}",
             reply_markup=paid_test_kb(lang, test_id, MANAGER_USERNAME),
-            parse_mode="HTML", protect_content=True)
+            parse_mode="HTML"
+        )
         return
-    await message.answer(text,
-        reply_markup=test_card_kb(lang, test_id, allow_group=bool(test["allow_group"])),
-        parse_mode="HTML", protect_content=True)
+
+    # Кнопки карточки теста
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="▶️ Начать тест" if lang == "ru" else "▶️ Тест бастау",
+            callback_data=f"test:start:{test_id}"
+        )],
+        [InlineKeyboardButton(
+            text="📤 Отправить в группу" if lang == "ru" else "📤 Топқа жіберу",
+            switch_inline_query=f"test_{test_id}"
+        )],
+        [InlineKeyboardButton(
+            text="📨 Поделиться ссылкой" if lang == "ru" else "📨 Сілтемемен бөлісу",
+            callback_data=f"test:share:{test_id}"
+        )],
+    ])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("test:check_access:"))
@@ -88,9 +111,9 @@ async def cb_check_access(call: CallbackQuery):
     user = db.get_user(call.from_user.id)
     lang = user.get("language", "ru") if user else "ru"
     if db.has_test_access(call.from_user.id, test_id):
-        await call.answer(t("access_granted", lang), show_alert=True)
+        await call.answer("✅ Доступ открыт!" if lang == "ru" else "✅ Қолжетімділік ашылды!", show_alert=True)
     else:
-        await call.answer(t("access_denied", lang), show_alert=True)
+        await call.answer("❌ Доступа нет." if lang == "ru" else "❌ Қолжетімділік жоқ.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("test:start:"))
@@ -101,63 +124,45 @@ async def cb_start_test(call: CallbackQuery, bot: Bot, state: FSMContext):
     await call.answer()
     test = db.get_test(test_id)
     if not test:
-        await call.message.answer(t("test_not_found", lang))
+        await call.message.answer("❌ Тест не найден." if lang == "ru" else "❌ Тест табылмады.")
         return
     if test["is_paid"] and not db.has_test_access(call.from_user.id, test_id):
         await call.message.answer(
-            t("paid_test_card", lang, price=test["price"], manager=MANAGER_USERNAME),
-            reply_markup=paid_test_kb(lang, test_id, MANAGER_USERNAME))
+            f"💰 Платный тест. Обратитесь: @{MANAGER_USERNAME}",
+            reply_markup=paid_test_kb(lang, test_id, MANAGER_USERNAME)
+        )
         return
     missing = await check_all_channels(bot, call.from_user.id, test_id)
     if missing:
-        await call.message.answer(t("must_subscribe", lang),
-            reply_markup=subscribe_kb(lang, missing[0], test_id))
+        await call.message.answer(
+            "📢 Подпишитесь на канал чтобы пройти тест:" if lang == "ru"
+            else "📢 Тест өту үшін арнаға жазылыңыз:",
+            reply_markup=subscribe_kb(lang, missing[0], test_id)
+        )
         return
-    if test["attempt_limit"] > 0:
+    if test.get("attempt_limit", 0) > 0:
         cnt = db.count_user_attempts(call.from_user.id, test_id)
         if cnt >= test["attempt_limit"]:
-            await call.message.answer(f"Вы исчерпали лимит попыток ({test['attempt_limit']}).")
+            await call.message.answer(
+                f"❌ Вы исчерпали лимит попыток ({test['attempt_limit']})."
+                if lang == "ru"
+                else f"❌ Әрекет лимиті таусылды ({test['attempt_limit']})."
+            )
             return
     await start_attempt(call.message, call.from_user.id, test_id, state)
 
 
-@router.callback_query(F.data.startswith("ans:"))
-async def cb_answer(call: CallbackQuery, bot: Bot):
-    parts = call.data.split(":")
-    if len(parts) != 4:
-        await call.answer("Устаревшая кнопка", show_alert=True)
-        return
-    attempt_id = int(parts[1])
-    question_id = int(parts[2])
-    option_id = int(parts[3])
-    attempt = db.get_attempt(attempt_id)
-    if not attempt or attempt["user_id"] != call.from_user.id:
-        await call.answer("Устаревшая кнопка", show_alert=True)
-        return
-    if attempt["status"] != "active":
-        await call.answer("Тест уже завершён", show_alert=True)
-        return
+@router.callback_query(F.data.startswith("test:share:"))
+async def cb_share_test(call: CallbackQuery, bot: Bot):
+    test_id = int(call.data.split(":")[2])
+    me = await bot.get_me()
+    link = f"https://t.me/{me.username}?start=test_{test_id}"
+    user = db.get_user(call.from_user.id)
+    lang = user.get("language", "ru") if user else "ru"
     await call.answer()
-    test = db.get_test(attempt["test_id"])
-    await handle_answer(bot, attempt_id, question_id, option_id, call.message.chat.id, test)
-
-
-@router.callback_query(F.data.startswith("pause:"))
-async def cb_pause(call: CallbackQuery, bot: Bot):
-    parts = call.data.split(":")
-    action = parts[1]
-    attempt_id = int(parts[2])
-    attempt = db.get_attempt(attempt_id)
-    if not attempt or attempt["user_id"] != call.from_user.id:
-        await call.answer("Устаревшая кнопка", show_alert=True)
-        return
-    await call.answer()
-    test = db.get_test(attempt["test_id"])
-    if action == "continue":
-        await resume_attempt(bot, attempt_id, call.message.chat.id, test)
-    elif action == "finish":
-        db.update_attempt(attempt_id, {"status": "finished"})
-        await finish_attempt(bot, attempt_id, call.message.chat.id, test)
+    await call.message.answer(
+        f"📨 {'Ссылка на тест' if lang == 'ru' else 'Тест сілтемесі'}:\n\n{link}"
+    )
 
 
 @router.callback_query(F.data.startswith("sub:check:"))
@@ -167,18 +172,9 @@ async def cb_check_sub(call: CallbackQuery, bot: Bot):
     lang = user.get("language", "ru") if user else "ru"
     missing = await check_all_channels(bot, call.from_user.id, test_id)
     if missing:
-        await call.answer(t("sub_fail", lang), show_alert=True)
+        await call.answer("❌ Вы ещё не подписались!" if lang == "ru" else "❌ Әлі жазылмадыңыз!", show_alert=True)
     else:
-        await call.answer(t("sub_ok", lang), show_alert=True)
-
-
-@router.callback_query(F.data.startswith("test:share:"))
-async def cb_share_test(call: CallbackQuery, bot: Bot):
-    test_id = int(call.data.split(":")[2])
-    me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start=test_{test_id}"
-    await call.answer()
-    await call.message.answer(f"📨 Поделиться тестом:\n\n{link}", protect_content=True)
+        await call.answer("✅ Подписка подтверждена!" if lang == "ru" else "✅ Жазылым расталды!", show_alert=True)
 
 
 @router.message(F.text.in_(["📊 Мои результаты", "📊 Нәтижелерім"]))
@@ -196,15 +192,21 @@ async def btn_my_results(message: Message):
         FROM test_attempts ta
         JOIN tests t ON t.id=ta.test_id
         WHERE ta.user_id=? AND ta.status='finished'
-        ORDER BY ta.id DESC LIMIT 20""", (uid,)).fetchall()
+        ORDER BY ta.id DESC LIMIT 20
+    """, (uid,)).fetchall()
     conn.close()
     if not rows:
-        await message.answer("Результатов пока нет.")
+        await message.answer(
+            "📭 Результатов пока нет." if lang == "ru" else "📭 Нәтиже жоқ."
+        )
         return
     lines = []
     for row in rows:
         total = row["correct_answers"] + row["wrong_answers"] + row["skipped_answers"]
         pct = round(row["correct_answers"] / total * 100, 1) if total else 0
         mark = "✅" if row["is_counted"] else "🔄"
-        lines.append(f"{mark} <b>{row['title']}</b>\n   {row['correct_answers']}/{total} ({pct}%)")
-    await message.answer("\n\n".join(lines), parse_mode="HTML", protect_content=True)
+        lines.append(
+            f"{mark} <b>{row['title']}</b>\n"
+            f"   {row['correct_answers']}/{total} ({pct}%)"
+        )
+    await message.answer("\n\n".join(lines), parse_mode="HTML")
