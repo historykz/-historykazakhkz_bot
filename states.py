@@ -1,4 +1,3 @@
-"""states.py — aiogram FSM state groups."""
 from aiogram.fsm.state import State, StatesGroup
 
 
@@ -6,181 +5,141 @@ class LangSelect(StatesGroup):
     choosing = State()
 
 
-# ── Admin: create test ────────────────────────────────────
 class CreateTest(StatesGroup):
-    title       = State()
+    title = State()
     description = State()
-    subject     = State()
-    class_num   = State()
-    category    = State()
-    language    = State()
-    test_type   = State()
-    status      = State()
-    paid        = State()
-    price       = State()
-    q_count     = State()
+    subject = State()
+    grade = State()
+    category = State()
+    language = State()
+    test_type = State()
+    status = State()
+    is_paid = State()
+    price = State()
+    question_count = State()
     attempt_limit = State()
     first_attempt_only = State()
-    deadline    = State()
-    shuffle_q   = State()
-    shuffle_o   = State()
-    show_correct = State()
-    show_explanation = State()
-    q_time      = State()
-    require_sub  = State()
-    channel_username = State()
-    allow_group  = State()
-    allow_duel   = State()
-    allow_daily  = State()
+    deadline = State()
+    shuffle_questions = State()
+    shuffle_options = State()
+    show_answers = State()
+    show_explanations = State()
+    time_per_question = State()
+    require_subscription = State()
+    allow_group = State()
+    allow_duel = State()
+    allow_daily = State()
     allow_tournament = State()
-    q_mode       = State()
-    adaptive     = State()
-    confirm      = State()
+    question_mode = State()
 
 
-# ── Admin: add question manually ─────────────────────────
 class AddQuestion(StatesGroup):
-    selecting_test = State()
-    text       = State()
-    options    = State()         # expects 4 lines
-    correct    = State()
+    question_text = State()
+    option_a = State()
+    option_b = State()
+    option_c = State()
+    option_d = State()
+    correct_option = State()
     explanation = State()
-    topic      = State()
+    topic = State()
     difficulty = State()
-    score      = State()
-    image      = State()
-    confirm    = State()
+    points = State()
 
 
-# ── Admin: text import ───────────────────────────────────
 class TextImport(StatesGroup):
-    select_test = State()
     waiting_text = State()
 
 
-# ── Admin: poll import ───────────────────────────────────
 class PollImport(StatesGroup):
-    select_test = State()
     waiting_polls = State()
-    resolve_correct = State()   # when correct_option_id unknown
 
 
-# ── Admin: resolve poll draft ─────────────────────────────
 class ResolveDraft(StatesGroup):
-    waiting = State()
+    selecting_correct = State()
 
 
-# ── Admin: give access ────────────────────────────────────
 class GiveAccess(StatesGroup):
-    enter_user_id = State()
-    select_type   = State()   # test or note
-    select_item   = State()
+    user_id = State()
+    access_type = State()
+    item_id = State()
 
 
-# ── Admin: premium ────────────────────────────────────────
 class AdminPremium(StatesGroup):
-    enter_user_id = State()
-    select_action = State()   # grant / revoke
-    enter_days    = State()
+    user_id = State()
+    action = State()
 
 
-# ── Admin: block ─────────────────────────────────────────
 class AdminBlock(StatesGroup):
-    enter_user_id = State()
-    action        = State()   # block / unblock
+    user_id = State()
+    action = State()
 
 
-# ── Admin: channel management ────────────────────────────
 class AdminChannel(StatesGroup):
-    enter_username = State()
-    select_scope   = State()
-    select_test    = State()
+    username = State()
+    is_global = State()
 
 
-# ── Admin: create note ────────────────────────────────────
 class CreateNote(StatesGroup):
-    title       = State()
+    title = State()
     description = State()
-    subject     = State()
-    category    = State()
-    language    = State()
-    topic       = State()
-    difficulty  = State()
-    paid_type   = State()   # free / paid / premium
-    price       = State()
-    pages       = State()   # multi-message page input
-    confirm     = State()
+    subject = State()
+    category = State()
+    topic = State()
+    language = State()
+    paid_type = State()
+    price = State()
+    difficulty = State()
+    content = State()
+    add_page = State()
 
 
-# ── Admin: add homework ───────────────────────────────────
 class AddHomework(StatesGroup):
-    select_note  = State()
-    hw_type      = State()
-    select_test  = State()   # if type==test
-    open_prompt  = State()   # if type==open
-    keywords     = State()
-    auto_check   = State()
+    hw_type = State()
+    test_id = State()
+    open_prompt = State()
 
 
-# ── Admin: generate test from note ───────────────────────
 class GenerateTest(StatesGroup):
-    select_note  = State()
-    q_count      = State()
-    difficulty   = State()
-    confirm      = State()
+    select_note = State()
+    q_count = State()
 
 
-# ── Admin: tournament ─────────────────────────────────────
 class CreateTournament(StatesGroup):
-    title       = State()
-    select_test = State()
-    start_time  = State()
-    end_time    = State()
-    prize       = State()
-    confirm     = State()
+    title = State()
+    test_id = State()
+    start_date = State()
+    end_date = State()
+    prize = State()
 
 
-# ── Admin: export ─────────────────────────────────────────
 class ExportResults(StatesGroup):
     select_test = State()
 
 
-# ── Admin: daily settings ─────────────────────────────────
 class DailySettings(StatesGroup):
-    q_count   = State()
-    mode      = State()
-    subjects  = State()
+    question_count = State()
+    mode = State()
 
 
-# ── User: test session ────────────────────────────────────
 class TestSession(StatesGroup):
     running = State()
 
 
-# ── User: group quiz launch ───────────────────────────────
 class GroupQuizLaunch(StatesGroup):
     select_test = State()
-    waiting_participants = State()
 
 
-# ── User: duel ────────────────────────────────────────────
 class DuelSearch(StatesGroup):
-    searching     = State()
-    select_subject = State()
-    in_duel       = State()
+    searching = State()
 
 
-# ── User: daily ───────────────────────────────────────────
 class DailySession(StatesGroup):
     running = State()
 
 
-# ── User: change language ─────────────────────────────────
 class ChangeLang(StatesGroup):
-    choosing = State()
+    selecting = State()
 
 
-# ── User: HW open answer ─────────────────────────────────
 class HomeworkAnswer(StatesGroup):
-    note_id  = State()
-    waiting  = State()
+    typing = State()
