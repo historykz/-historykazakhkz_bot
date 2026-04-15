@@ -26,7 +26,8 @@ class RegisterUserMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user:
             db.upsert_user(
-                tg_id=user.id,
+               telegram_id=user.id,
+
                 username=user.username or "",
                 full_name=user.full_name or "",
             )
