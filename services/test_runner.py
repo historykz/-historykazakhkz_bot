@@ -151,7 +151,6 @@ async def send_poll_question(bot: Bot, attempt_id: int, chat_id: int,
         InlineKeyboardButton(text=pause_text, callback_data=f"tp_{attempt_id}"),
         InlineKeyboardButton(text=finish_text, callback_data=f"tf_{attempt_id}"),
     ]])
-    await bot.send_message(chat_id, "⏱", reply_markup=kb)
 
     db.update_attempt(attempt_id, {"pause_time": datetime.utcnow().isoformat()})
 
