@@ -67,7 +67,7 @@ async def got_title(message: Message, state: FSMContext):
         )
         await state.clear()
         return
-    btns = [[InlineKeyboardButton(text=s["name"], callback_data=f"pick_subject_{s['id']}_{s['name']}")] for s in subjects]
+    btns = [[InlineKeyboardButton(text=s["name"], callback_data=f"pick_subj_{s['id']}")] for s in subjects]
     btns.append([InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")])
     await message.answer(
         "📂 Выберите <b>раздел</b>:",
@@ -77,10 +77,14 @@ async def got_title(message: Message, state: FSMContext):
     await state.set_state(CreateTest.subject)
 
 
-@router.callback_query(IsAdmin(), F.data.startswith("pick_subject_"))
+btns = [[InlineKeyboardButton(text=s["name"], callback_data=f"pick_subject_{s['id']}_{s['name']}")] for s in subjects]
+@router.callback_query(IsAdmin(), F.data.startswith("pick_subj_"))
 async def got_subject(cq: CallbackQuery, state: FSMContext):
-    parts = cq.data.split("_", 3)
-    subject_name = parts[3]
+    subject_id = int(cq.data.split("_")[-1])
+    from database import get_subjects
+    subjects = get_subjects()
+    subject = next((s for s in subjects if s["id"] == subject_id), None)
+    subject_name = subject["name"] if subject else "Неизвестно"
     await state.update_data(subject=subject_name)
     await cq.message.edit_text(
         f"⏱ Введите <b>время на вопрос</b> (секунды, например 30):",
