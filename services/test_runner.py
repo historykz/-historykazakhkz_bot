@@ -71,7 +71,8 @@ async def start_attempt(message: Message, user_id: int, test_id: int,
         await message.answer(
             f"🎯 <b>Тест басталды!</b>\n"
             f"Сұрақ: {len(q_ids)}\n"
-            f"Уақыт: {time_per_q} сек",
+            f"Уақыт: {time_per_q} сек\n\n"
+            f"Әр сұрақ астында ⏸ және ⏹ батырмалары бар",
             parse_mode="HTML"
         )
 
@@ -83,8 +84,6 @@ async def send_poll_question(bot: Bot, attempt_id: int, chat_id: int,
     attempt = db.get_attempt(attempt_id)
     if not attempt or attempt["status"] != "active":
         return
-
-    # Если тест на паузе — не отправляем вопрос
     if attempt.get("paused"):
         return
 
@@ -144,17 +143,21 @@ async def send_poll_question(bot: Bot, attempt_id: int, chat_id: int,
         await bot.send_message(chat_id, f"❌ Ошибка: {e}")
         return
 
-    # Кнопки под вопросом
-    pause_text = "⏸ Пауза" if lang == "ru" else "⏸ Тоқтату"
+    db.update_attempt(attempt_id, {"pause_time": datetime.utcnow().isoformat()})
+
+    # Кнопки паузы и завершения
+    pause_text = "⏸ Пауза" if lang == "ru" else "⏸ Үзіліс"
     finish_text = "⏹ Завершить" if lang == "ru" else "⏹ Аяқтау"
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=pause_text, callback_data=f"tp_{attempt_id}"),
         InlineKeyboardButton(text=finish_text, callback_data=f"tf_{attempt_id}"),
     ]])
+    try:
+        await bot.send_message(chat_id, "⏱", reply_markup=kb)
+    except Exception:
+        pass
 
-    db.update_attempt(attempt_id, {"pause_time": datetime.utcnow().isoformat()})
-
-    # Таймер — авто-переход
+    # Таймер авто-переход
     _cancel_timer(attempt_id)
     task = asyncio.create_task(
         _poll_timer(bot, attempt_id, chat_id, test, lang, qid, time_per_q + 2)
@@ -172,7 +175,6 @@ async def _poll_timer(bot: Bot, attempt_id: int, chat_id: int, test,
         return
     if db.has_answered(attempt_id, question_id):
         return
-    # Записываем как пропущенный
     db.save_answer(attempt_id, question_id, None, False, seconds * 1000, topic="")
     db.update_attempt(attempt_id, {
         "current_question_index": attempt["current_question_index"] + 1,
