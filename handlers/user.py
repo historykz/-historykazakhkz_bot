@@ -188,3 +188,48 @@ async def btn_my_results(message: Message):
         mark = "✅" if row["is_counted"] else "🔄"
         lines.append(f"{mark} <b>{row['title']}</b>\n   {row['correct_answers']}/{total} ({pct}%)")
     await message.answer("\n\n".join(lines), parse_mode="HTML")
+    @router.callback_query(F.data.startswith("tp_"))
+async def cb_test_pause(call: CallbackQuery, bot: Bot):
+    attempt_id = int(call.data.split("_")[1])
+    user = db.get_user(call.from_user.id)
+    lang = user.get("language", "ru") if user else "ru"
+    attempt = db.get_attempt(attempt_id)
+    if not attempt or attempt["user_id"] != call.from_user.id:
+        await call.answer("❌" , show_alert=True)
+        return
+    if attempt.get("paused"):
+        # Снять паузу
+        db.update_attempt(attempt_id, {"paused": 0})
+        await call.answer("▶️ Продолжаем!" if lang=="ru" else "▶️ Жалғасамыз!", show_alert=True)
+        test = db.get_test(attempt["test_id"])
+        await resume_attempt(bot, attempt_id, call.message.chat.id, test or {})
+    else:
+        # Поставить на паузу
+        db.update_attempt(attempt_id, {"paused": 1})
+        await call.answer("⏸ Пауза!" if lang=="ru" else "⏸ Үзіліс!", show_alert=True)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="▶️ Продолжить" if lang=="ru" else "▶️ Жалғастыру",
+                callback_data=f"tp_{attempt_id}"
+            ),
+            InlineKeyboardButton(
+                text="⏹ Завершить" if lang=="ru" else "⏹ Аяқтау",
+                callback_data=f"tf_{attempt_id}"
+            ),
+        ]])
+        await call.message.edit_reply_markup(reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("tf_"))
+async def cb_test_finish(call: CallbackQuery, bot: Bot):
+    attempt_id = int(call.data.split("_")[1])
+    user = db.get_user(call.from_user.id)
+    lang = user.get("language", "ru") if user else "ru"
+    attempt = db.get_attempt(attempt_id)
+    if not attempt or attempt["user_id"] != call.from_user.id:
+        await call.answer("❌", show_alert=True)
+        return
+    await call.answer()
+    test = db.get_test(attempt["test_id"]) or {}
+    await finish_attempt(bot, attempt_id, call.message.chat.id, test, lang)
+
